@@ -1,0 +1,58 @@
+int sensor1 = 2;   
+int sensor2 = A0;  
+int led1 = 3;      
+int led2 = 4;      
+float threshold = 25.0;  
+
+volatile bool detected = false;
+
+void sensorTrigger() {
+    detected = true;
+}
+
+void setup() {
+    pinMode(sensor1, INPUT);
+    pinMode(led1, OUTPUT);
+    pinMode(led2, OUTPUT);
+    Serial.begin(9600);
+
+    attachInterrupt(digitalPinToInterrupt(sensor1), sensorTrigger, RISING);
+
+    digitalWrite(led1, HIGH);
+    digitalWrite(led2, HIGH);
+    delay(1000);
+    digitalWrite(led1, LOW);
+    digitalWrite(led2, LOW);
+}
+
+void loop() {
+    int sensorReading = analogRead(sensor2);
+    float voltage = sensorReading * 5.0 / 1023.0;
+    float temp = (voltage - 0.5) * 100.0;
+
+    Serial.print("Temp: ");
+    Serial.print(temp);
+    Serial.println(" C");
+
+    int state = digitalRead(sensor1);
+    Serial.print("Sensor1 State: ");
+    Serial.println(state);
+
+    if (detected) {
+        digitalWrite(led1, HIGH);
+        Serial.println("Detected! LED1 ON");
+        delay(1000);
+        digitalWrite(led1, LOW);
+        detected = false;
+    }
+
+    if (temp > threshold) {
+        digitalWrite(led2, HIGH);
+        Serial.println("High Temp! LED2 ON");
+        delay(1000);
+    } else {
+        digitalWrite(led2, LOW);
+    }
+
+    delay(500);
+}
