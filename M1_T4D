@@ -1,0 +1,163 @@
+#include <avr/interrupt.h>
+
+// Pin Definitions
+#define PIR_SENSOR_PIN 2        // PIR Sensor (External Interrupt)
+#define INDICATOR_LED 13       // LED Indicator
+#define LIGHT_SENSOR_PIN A0    // LDR (Analog Input)
+#define USER_BUTTON_PIN 4      // Button (Using PCINT)
+#define TEMP_SENSOR_PIN A1     // NTC Thermistor (Analog Input)
+
+// Constants for NTC Thermistor (10K)
+#define FIXED_RESISTOR 10000.0 // 10K fixed resistor
+#define REFERENCE_RESISTANCE 10000.0 // NTC resistance at 25°C
+#define REFERENCE_TEMPERATURE 25.0 // 25°C baseline
+#define BETA_VALUE 3950 // Beta coefficient for NTC
+
+// Global Flags
+volatile bool isMotionDetected = false;
+volatile bool timerElapsed = false;
+volatile bool isButtonPressed = false;
+
+void handleMotionInterrupt();
+void configureTimer();
+void monitorTemperature();
+void evaluateLightLevel();
+void initializePCINT();
+void handleButtonInterrupt();
+
+void setup() {
+    pinMode(PIR_SENSOR_PIN, INPUT);
+    pinMode(INDICATOR_LED, OUTPUT);
+    pinMode(LIGHT_SENSOR_PIN, INPUT);
+    pinMode(TEMP_SENSOR_PIN, INPUT);
+    pinMode(USER_BUTTON_PIN, INPUT_PULLUP);  // Enable internal pull-up resistor
+
+    Serial.begin(9600);
+    Serial.println("System Initialized!");
+
+    // Attach external interrupt for PIR sensor
+    attachInterrupt(digitalPinToInterrupt(PIR_SENSOR_PIN), handleMotionInterrupt, RISING);
+
+    // Set up Pin Change Interrupt for button
+    initializePCINT();
+
+    // Configure Timer1 for 1-second interval
+    configureTimer();
+}
+
+void loop() {
+    if (isMotionDetected) {
+        Serial.println("Motion Detected!");
+        digitalWrite(INDICATOR_LED, HIGH);
+        Serial.println("LED Active for 2 Seconds");
+        
+        delay(2000);
+        
+        digitalWrite(INDICATOR_LED, LOW);
+        Serial.println("LED Deactivated.");
+        isMotionDetected = false;
+    }
+
+    if (isButtonPressed) {
+        Serial.println("Button Pressed!");
+        digitalWrite(INDICATOR_LED, HIGH);
+        delay(500);
+        digitalWrite(INDICATOR_LED, LOW);
+        isButtonPressed = false;
+    }
+
+    if (timerElapsed) {
+        monitorTemperature();  // Monitor temperature every second
+        evaluateLightLevel();  // Assess ambient light conditions
+        timerElapsed = false;
+    }
+}
+
+// Interrupt Service Routine (ISR) for PIR Sensor
+void handleMotionInterrupt() {
+    isMotionDetected = true;
+}
+
+// Function to configure Timer1 for 1-second intervals
+void configureTimer() {
+    cli();  // Disable global interrupts
+
+    TCCR1A = 0;
+    TCCR1B = 0;
+    TCNT1 = 0;
+    OCR1A = 15624; // Set for 1Hz (1-second interval)
+    TCCR1B |= (1 << WGM12);
+    TCCR1B |= (1 << CS12) | (1 << CS10); // Prescaler 1024
+    TIMSK1 |= (1 << OCIE1A);
+
+    sei(); // Enable global interrupts
+}
+
+// Timer1 ISR (Executes every 1 second)
+ISR(TIMER1_COMPA_vect) {
+    timerElapsed = true;
+}
+
+// Function to monitor temperature using NTC Thermistor
+void monitorTemperature() {
+    int sensorValue = analogRead(TEMP_SENSOR_PIN);
+    float voltage = sensorValue * (5.0 / 1023.0);
+
+    // Compute NTC resistance
+    float resistance = FIXED_RESISTOR * (5.0 / voltage - 1.0);
+
+    // Apply Steinhart-Hart equation for temperature calculation
+    float steinhart;
+    steinhart = resistance / REFERENCE_RESISTANCE;
+    steinhart = log(steinhart);
+    steinhart /= BETA_VALUE;
+    steinhart += 1.0 / (REFERENCE_TEMPERATURE + 273.15);
+    steinhart = 1.0 / steinhart;
+    steinhart -= 273.15;
+
+    Serial.print("Temperature: ");
+    Serial.print(steinhart);
+    Serial.println(" °C");
+
+    if (steinhart > 30.0) {
+        Serial.println("High Temperature Warning!");
+        digitalWrite(INDICATOR_LED, HIGH);
+        Serial.println("LED Active for 1 Second");
+
+        delay(1000);
+
+        digitalWrite(INDICATOR_LED, LOW);
+        Serial.println("LED Deactivated.");
+    }
+}
+
+// Function to evaluate LDR sensor reading
+void evaluateLightLevel() {
+    int lightReading = analogRead(LIGHT_SENSOR_PIN);
+    Serial.print("LDR Value: ");
+    Serial.println(lightReading);
+
+    if (lightReading < 500) {
+        Serial.println("Low Light Detected! Enabling LED.");
+        digitalWrite(INDICATOR_LED, HIGH);
+    } else {
+        digitalWrite(INDICATOR_LED, LOW);
+    }
+}
+
+// Function to configure Pin Change Interrupt for button
+void initializePCINT() {
+    cli();  // Disable global interrupts
+
+    PCICR |= (1 << PCIE2);
+    PCMSK2 |= (1 << PCINT20);
+
+    sei();  // Enable global interrupts
+}
+
+// Pin Change Interrupt Service Routine (ISR) for Button
+ISR(PCINT2_vect) {
+    if (digitalRead(USER_BUTTON_PIN) == LOW) {
+        isButtonPressed = true;
+    }
+}
