@@ -1,0 +1,54 @@
+#include <iostream>
+#include <vector>
+#include <chrono>
+#include <fstream>
+#include <cstdlib>  // For rand()
+#include <ctime>    // For seeding rand()
+#define N 500  // Define matrix size (Modify as needed)
+using namespace std;
+using namespace chrono;
+// Function to generate a random matrix
+void generateRandomMatrix(vector<vector<int>>& matrix) {
+    for (int i = 0; i < N; i++) {
+        for (int j = 0; j < N; j++) {
+            matrix[i][j] = rand() % 10; // Random values between 0-9
+        }
+    }
+}
+// Function to multiply two matrices
+void multiplyMatrices(const vector<vector<int>>& A, const vector<vector<int>>& B, vector<vector<int>>& C) {
+    for (int i = 0; i < N; i++) {
+        for (int j = 0; j < N; j++) {
+            C[i][j] = 0;
+            for (int k = 0; k < N; k++) {
+                C[i][j] += A[i][k] * B[k][j];
+            }
+        }
+    }
+}
+int main() {
+    srand(time(0)); // Seed for random number generation
+    // Initialize matrices
+    vector<vector<int>> A(N, vector<int>(N));
+    vector<vector<int>> B(N, vector<int>(N));
+    vector<vector<int>> C(N, vector<int>(N, 0));
+    generateRandomMatrix(A);
+    generateRandomMatrix(B);
+    // Measure execution time
+    auto start_time = high_resolution_clock::now();
+    multiplyMatrices(A, B, C);
+    auto end_time = high_resolution_clock::now();
+    // Compute execution duration
+    cout << "Execution Time: " << duration_cast<milliseconds>(end_time - start_time).count() << " ms" << endl;
+    // Save result to file
+    ofstream outputFile("output_matrix.txt");
+    for (const auto& row : C) {
+        for (int val : row) {
+            outputFile << val << " ";
+        }
+        outputFile << "\n";
+    }
+    outputFile.close();
+    return 0;
+}
+
