@@ -1,0 +1,47 @@
+#include <chrono>
+#include <cstdlib>
+#include <iostream>
+#include <time.h>
+
+using namespace std::chrono;
+using namespace std;
+
+//random vector generator function whose values are between 0-99
+void randomVector(int vector[], int size) {
+  for (int i = 0; i < size; i++) {
+    vector[i] = rand() % 100;
+  }
+}
+
+int main() {
+  unsigned long size = 100000000;//vector size
+  srand(time(0));//seeding of random number generator
+  int *v1, *v2, *v3; //Ddeclaring vector variables
+  auto start = high_resolution_clock::now();// Start of time measurement
+
+//Allocating memories to vectors dynamically
+  v1 = (int *)malloc(size * sizeof(int));
+  v2 = (int *)malloc(size * sizeof(int));
+  v3 = (int *)malloc(size * sizeof(int));
+
+//Putting vector values with random numbers
+  randomVector(v1, size);
+  randomVector(v2, size);
+
+
+//performing addition of vectors selected
+  for (int i = 0; i < size; i++) {
+    v3[i] = v1[i] + v2[i];
+  }
+  auto stop = high_resolution_clock::now();//Stopping of time measurement
+  auto duration = duration_cast<microseconds>(stop - start); //Calculating duration of time
+  
+//Writing the output of execution time
+cout << "Time taken by function :" << duration.count() << " microseconds"
+       << endl;
+// Free space of allocated memory to vector
+  free(v1);
+  free(v2);
+  free(v3);
+  return 0;
+}
