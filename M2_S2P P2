@@ -1,0 +1,54 @@
+#include <chrono>
+#include <cstdlib>
+#include <iostream>
+#include <ctime>
+#include <thread>
+#include <vector>
+#include <algorithm>
+using namespace std::chrono;
+using namespace std;
+
+void generateRandomArray(int arr[], int length) {
+    for (int i = 0; i < length; i++) {
+        arr[i] = rand() % 100;
+    }
+}
+void addVectors(int arr1[], int arr2[], int result[], int startIdx, int endIdx) {
+    for (int i = startIdx; i < endIdx; i++) {
+        result[i] = arr1[i] + arr2[i];
+    }
+}
+int main() {
+    unsigned long dataSize = 100000000;
+    int threadCount = thread::hardware_concurrency();
+    srand(time(0));
+
+    int *arr1 = (int *)malloc(dataSize * sizeof(int));
+    int *arr2 = (int *)malloc(dataSize * sizeof(int));
+    int *resultArr = (int *)malloc(dataSize * sizeof(int));
+
+    generateRandomArray(arr1, dataSize);
+    generateRandomArray(arr2, dataSize);
+
+    vector<thread> threadPool;
+    int segmentSize = dataSize / threadCount;
+
+    auto startTime = high_resolution_clock::now();
+
+    for (int i = 0; i < threadCount; i++) {
+        threadPool.push_back(thread(addVectors, arr1, arr2, resultArr, 
+            i * segmentSize, min((unsigned long)((i + 1) * segmentSize), dataSize)));
+    }
+
+    for (auto &t : threadPool) {
+        t.join();
+    }
+
+    auto endTime = high_resolution_clock::now();
+    auto executionTime = duration_cast<microseconds>(endTime - startTime);
+    cout << "Execution time of parallel operation: " << executionTime.count() << " microseconds" << endl;
+    free(arr1);
+    free(arr2);
+    free(resultArr);
+    return 0;
+}
