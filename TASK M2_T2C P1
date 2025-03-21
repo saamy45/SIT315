@@ -1,0 +1,49 @@
+#include <iostream>
+#include <vector>
+#include <cstdlib>
+#include <ctime>
+#include <chrono>
+
+using namespace std;
+using namespace chrono;
+
+void quickSort(vector<int>& arr, int low, int high);
+int partition(vector<int>& arr, int low, int high);
+
+void quickSort(vector<int>& arr, int low, int high) {
+    if (low < high) {
+        int pivotIndex = partition(arr, low, high);
+        quickSort(arr, low, pivotIndex - 1);
+        quickSort(arr, pivotIndex + 1, high);
+    }
+}
+
+int partition(vector<int>& arr, int low, int high) {
+    int pivotIndex = low + rand() % (high - low + 1); // Random pivot selection
+    swap(arr[pivotIndex], arr[high]); // Move pivot to the end
+    int pivot = arr[high];
+    int i = low - 1;
+    for (int j = low; j < high; j++) {
+        if (arr[j] < pivot) {
+            i++;
+            swap(arr[i], arr[j]);
+        }
+    }
+    swap(arr[i + 1], arr[high]);
+    return i + 1;
+}
+
+int main() {
+    const int size = 1000000; // Adjust size if needed
+    vector<int> arr(size);
+    srand(time(0));
+    for (int i = 0; i < size; i++) {
+        arr[i] = rand() % 100000;
+    }
+    auto start = high_resolution_clock::now();
+    quickSort(arr, 0, size - 1);
+    auto stop = high_resolution_clock::now();
+    auto duration = duration_cast<milliseconds>(stop - start);
+    cout << "Execution Time (Sequential): " << duration.count() << " ms" << endl;
+    return 0;
+}
