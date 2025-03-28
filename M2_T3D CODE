@@ -1,1 +1,111 @@
+#include <iostream>
+#include <queue>
+#include <vector>
+#include <unordered_map>
+#include <thread>
+#include <mutex>
+#include <condition_variable>
+#include <algorithm>
+#include <fstream>
+#define NUM_PRODUCERS 1  
+#define NUM_CONSUMERS 3  
+#define TOP_N 3  
 
+std::queue<std::tuple<int, int, int>> dataQueue;  
+std::unordered_map<int, int> trafficData;  
+std::mutex queueMutex, dataMutex;  
+std::condition_variable dataCond;  
+bool simulationRunning = true;  
+
+void producer() {
+    std::ifstream infile("traffic_data.txt");
+    if (!infile) {
+        std::cerr << "Error: Could not open traffic_data.txt\n";
+        return;
+    }
+
+    int timestamp, signal_id, cars_passed;
+    while (infile >> timestamp >> signal_id >> cars_passed) {
+        {
+            std::lock_guard<std::mutex> lock(queueMutex);
+            dataQueue.push({timestamp, signal_id, cars_passed});
+        }
+        dataCond.notify_one();
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    }
+
+    infile.close();
+}
+
+void consumer(int consumer_id) {
+    while (simulationRunning || !dataQueue.empty()) {
+        std::unique_lock<std::mutex> lock(queueMutex);
+        dataCond.wait(lock, [] { return !dataQueue.empty() || !simulationRunning; });
+
+        while (!dataQueue.empty()) {
+            auto [timestamp, signal_id, cars_passed] = dataQueue.front();
+            dataQueue.pop();
+            lock.unlock();
+
+            {
+                std::lock_guard<std::mutex> dataLock(dataMutex);
+                trafficData[signal_id] += cars_passed;
+            }
+
+            std::cout << "[Consumer " << consumer_id << "] Processed: Signal " 
+                      << signal_id << ", Cars Passed: " << cars_passed << std::endl;
+
+            lock.lock();
+        }
+    }
+}
+
+void reportCongestedSignals() {
+    std::this_thread::sleep_for(std::chrono::seconds(5));  
+
+    std::lock_guard<std::mutex> lock(dataMutex);
+    if (trafficData.empty()) {
+        std::cout << "No traffic data available yet...\n";
+        return;
+    }
+
+    std::vector<std::pair<int, int>> sortedData(trafficData.begin(), trafficData.end());
+    std::sort(sortedData.begin(), sortedData.end(), [](auto &a, auto &b) {
+        return a.second > b.second;  
+    });
+
+    std::cout << "\n Top " << TOP_N << " Congested Signals:\n";
+    for (int i = 0; i < std::min(TOP_N, (int)sortedData.size()); i++) {
+        std::cout << "Signal " << sortedData[i].first << " - Cars Passed: " << sortedData[i].second << "\n";
+    }
+
+    std::cout << "\n All Signal Data (Descending Order):\n";
+    for (const auto &entry : sortedData) {
+        std::cout << "Signal " << entry.first << " - Cars Passed: " << entry.second << "\n";
+    }
+    std::cout << "----------------------\n";
+}
+
+int main() {
+    std::vector<std::thread> producerThreads, consumerThreads;
+
+    producerThreads.emplace_back(producer);
+
+    for (int i = 0; i < NUM_CONSUMERS; i++) {
+        consumerThreads.emplace_back(consumer, i);
+    }
+
+    for (auto &t : producerThreads) {
+        t.join();
+    }
+
+    simulationRunning = false;
+    dataCond.notify_all();
+
+    for (auto &t : consumerThreads) {
+        t.join();
+    }
+    reportCongestedSignals();
+    std::cout << "Simulation complete.\n";
+    return 0;
+}
