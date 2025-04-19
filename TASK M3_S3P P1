@@ -1,0 +1,131 @@
+#include <CL/cl.h>
+#include <iostream>
+#include <vector>
+#include <fstream>
+#include <sstream>
+#include <chrono>
+
+// Global variables
+int SZ;
+std::vector<int> v1, v2, v_out;
+cl_context context;
+cl_command_queue queue;
+cl_program program;
+cl_kernel kernel;
+cl_mem bufV1, bufV2, bufV_out;
+
+// Initialize vectors with random integers
+void init(std::vector<int> &v, int size) {
+    v.resize(size);
+    for (int i = 0; i < size; ++i) {
+        v[i] = rand() % 100;
+    }
+}
+
+// Print part of the vector
+void print(const std::vector<int> &v, int size) {
+    for (int i = 0; i < 10 && i < size; ++i) {
+        std::cout << v[i] << " ";
+    }
+    std::cout << "\n";
+}
+
+// Read OpenCL source file
+std::string readKernelSource(const char *filename) {
+    std::ifstream file(filename);
+    std::ostringstream oss;
+    oss << file.rdbuf();
+    return oss.str();
+}
+
+// Setup OpenCL context, device, and kernel
+void setup_openCL_device_context_queue_kernel(const char *filename, const char *kernelname) {
+    cl_device_id device;
+    cl_platform_id platform;
+    cl_int err;
+
+    // Get platform
+    clGetPlatformIDs(1, &platform, NULL);
+    clGetDeviceIDs(platform, CL_DEVICE_TYPE_GPU, 1, &device, NULL);
+
+    // Create context and command queue
+    context = clCreateContext(0, 1, &device, NULL, NULL, &err);
+    queue = clCreateCommandQueue(context, device, 0, &err);
+
+    // Read and build program
+    std::string source = readKernelSource(filename);
+    const char *src = source.c_str();
+    size_t src_size = source.length();
+    program = clCreateProgramWithSource(context, 1, &src, &src_size, &err);
+    clBuildProgram(program, 0, NULL, NULL, NULL, NULL);
+
+    // Create kernel
+    kernel = clCreateKernel(program, kernelname, &err);
+}
+
+// Setup memory buffers
+void setup_kernel_memory() {
+    bufV1 = clCreateBuffer(context, CL_MEM_READ_ONLY, SZ * sizeof(int), NULL, NULL);
+    bufV2 = clCreateBuffer(context, CL_MEM_READ_ONLY, SZ * sizeof(int), NULL, NULL);
+    bufV_out = clCreateBuffer(context, CL_MEM_WRITE_ONLY, SZ * sizeof(int), NULL, NULL);
+
+    clEnqueueWriteBuffer(queue, bufV1, CL_TRUE, 0, SZ * sizeof(int), &v1[0], 0, NULL, NULL);
+    clEnqueueWriteBuffer(queue, bufV2, CL_TRUE, 0, SZ * sizeof(int), &v2[0], 0, NULL, NULL);
+}
+
+// Set kernel arguments
+void copy_kernel_args() {
+    clSetKernelArg(kernel, 0, sizeof(int), (void *)&SZ);
+    clSetKernelArg(kernel, 1, sizeof(cl_mem), (void *)&bufV1);
+    clSetKernelArg(kernel, 2, sizeof(cl_mem), (void *)&bufV2);
+    clSetKernelArg(kernel, 3, sizeof(cl_mem), (void *)&bufV_out);
+}
+
+// Execute the kernel and read the result
+void run_kernel() {
+    size_t global = SZ;
+    cl_event event;
+    clEnqueueNDRangeKernel(queue, kernel, 1, NULL, &global, NULL, 0, NULL, &event);
+    clWaitForEvents(1, &event);
+
+    clEnqueueReadBuffer(queue, bufV_out, CL_TRUE, 0, SZ * sizeof(int), &v_out[0], 0, NULL, NULL);
+}
+
+// Free OpenCL resources
+void free_memory() {
+    clReleaseMemObject(bufV1);
+    clReleaseMemObject(bufV2);
+    clReleaseMemObject(bufV_out);
+    clReleaseKernel(kernel);
+    clReleaseProgram(program);
+    clReleaseCommandQueue(queue);
+    clReleaseContext(context);
+}
+
+int main(int argc, char **argv) {
+    if (argc != 2) {
+        std::cerr << "Usage: ./vector_ops <size>\n";
+        return 1;
+    }
+
+    SZ = std::stoi(argv[1]);
+
+    init(v1, SZ);
+    init(v2, SZ);
+    init(v_out, SZ); // Initialize result vector
+
+    setup_openCL_device_context_queue_kernel("vector_ops_ocl.cl", "vector_add_ocl");
+    setup_kernel_memory();
+    copy_kernel_args();
+
+    auto start = std::chrono::high_resolution_clock::now();
+    run_kernel();
+    auto stop = std::chrono::high_resolution_clock::now();
+
+    print(v_out, SZ);
+    std::chrono::duration<double, std::milli> elapsed_time = stop - start;
+    std::cout << "OpenCL Kernel Execution Time: " << elapsed_time.count() << " ms\n";
+
+    free_memory();
+    return 0;
+}
