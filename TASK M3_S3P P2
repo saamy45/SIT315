@@ -1,0 +1,52 @@
+
+#include <iostream>
+#include <vector>
+#include <thread>
+#include <chrono>
+
+int SZ = 100000000;      // Default vector size
+int NUM_THREADS = 8;     // Number of threads
+
+// Function for each thread to perform part of the addition
+void vector_add(const std::vector<int> &v1, const std::vector<int> &v2, std::vector<int> &v_out, int start, int end) {
+    for (int i = start; i < end; ++i) {
+        v_out[i] = v1[i] + v2[i];
+    }
+}
+
+int main(int argc, char **argv) {
+    if (argc == 2)
+        SZ = std::stoi(argv[1]);
+
+    std::vector<int> v1(SZ), v2(SZ), v_out(SZ);
+
+    // Initialize vectors with random values
+    for (int i = 0; i < SZ; ++i) {
+        v1[i] = rand() % 100;
+        v2[i] = rand() % 100;
+    }
+
+    auto start_time = std::chrono::high_resolution_clock::now();
+
+    std::vector<std::thread> threads;
+    int chunk = SZ / NUM_THREADS;
+
+    // Create threads
+    for (int i = 0; i < NUM_THREADS; ++i) {
+        int start = i * chunk;
+        int end = (i == NUM_THREADS - 1) ? SZ : (i + 1) * chunk;
+        threads.emplace_back(vector_add, std::ref(v1), std::ref(v2), std::ref(v_out), start, end);
+    }
+
+    // Join all threads
+    for (auto &t : threads) {
+        t.join();
+    }
+
+    auto end_time = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double, std::milli> elapsed = end_time - start_time;
+
+    std::cout << "Multithreaded CPU Execution Time: " << elapsed.count() << " ms\n";
+
+    return 0;
+}
