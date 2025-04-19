@@ -1,0 +1,54 @@
+#include <mpi.h>
+#include <omp.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+void multiply(float* A, float* B, float* C, int rows, int N) {
+    #pragma omp parallel for collapse(2)
+    for (int i = 0; i < rows; i++)
+        for (int j = 0; j < N; j++) {
+            float sum = 0;
+            for (int k = 0; k < N; k++)
+                sum += A[i*N + k] * B[k*N + j];
+            C[i*N + j] = sum;
+        }
+}
+
+int main(int argc, char* argv[]) {
+    int rank, size, N = 1024;
+    MPI_Init(&argc, &argv);
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+
+    int rows = N / size;
+
+    float *A = NULL, *B = malloc(N*N*sizeof(float)), *localA = malloc(rows*N*sizeof(float));
+    float *localC = malloc(rows*N*sizeof(float)), *C = NULL;
+
+    if (rank == 0) {
+        A = malloc(N*N*sizeof(float));
+        C = malloc(N*N*sizeof(float));
+        for (int i = 0; i < N*N; i++) {
+            A[i] = rand() % 10;
+            B[i] = rand() % 10;
+        }
+    }
+
+    MPI_Bcast(B, N*N, MPI_FLOAT, 0, MPI_COMM_WORLD);
+    MPI_Scatter(A, rows*N, MPI_FLOAT, localA, rows*N, MPI_FLOAT, 0, MPI_COMM_WORLD);
+
+    double start = MPI_Wtime();
+    multiply(localA, B, localC, rows, N);
+    double end = MPI_Wtime();
+
+    MPI_Gather(localC, rows*N, MPI_FLOAT, C, rows*N, MPI_FLOAT, 0, MPI_COMM_WORLD);
+
+    if (rank == 0)
+        printf("MPI + OpenMP Time: %f seconds\n", end - start);
+
+    free(localA); free(B); free(localC);
+    if (rank == 0) { free(A); free(C); }
+
+    MPI_Finalize();
+    return 0;
+}
