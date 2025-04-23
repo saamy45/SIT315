@@ -1,0 +1,96 @@
+#include <CL/cl.hpp>
+#include <mpi.h>
+#include <iostream>
+#include <vector>
+#include <algorithm>
+#include <ctime>
+
+// OpenCL kernel for sorting
+const char* kernel_code = R"(
+__kernel void quicksort_kernel(__global int* arr, int low, int high) {
+    if (low < high) {
+        int pivot = arr[high];
+        int i = low - 1;
+        for (int j = low; j < high; j++) {
+            if (arr[j] <= pivot) {
+                i++;
+                int temp = arr[i];
+                arr[i] = arr[j];
+                arr[j] = temp;
+            }
+        }
+        int temp = arr[i + 1];
+        arr[i + 1] = arr[high];
+        arr[high] = temp;
+        quicksort_kernel(arr, low, i);
+        quicksort_kernel(arr, i + 2, high);
+    }
+}
+)";
+
+void opencl_sort(std::vector<int>& arr, cl::Context context, cl::CommandQueue queue) {
+    cl::Program::Sources sources(1, std::make_pair(kernel_code, strlen(kernel_code)));
+    cl::Program program(context, sources);
+    program.build();
+
+    cl::Buffer buffer(context, CL_MEM_READ_WRITE, arr.size() * sizeof(int));
+    queue.enqueueWriteBuffer(buffer, CL_TRUE, 0, arr.size() * sizeof(int), arr.data());
+
+    cl::Kernel kernel(program, "quicksort_kernel");
+    kernel.setArg(0, buffer);
+    kernel.setArg(1, 0); // low
+    kernel.setArg(2, arr.size() - 1); // high
+
+    queue.enqueueNDRangeKernel(kernel, cl::NullRange, cl::NDRange(arr.size()), cl::NullRange);
+    queue.finish();
+
+    queue.enqueueReadBuffer(buffer, CL_TRUE, 0, arr.size() * sizeof(int), arr.data());
+}
+
+int main(int argc, char* argv[]) {
+    MPI_Init(&argc, &argv);
+
+    int rank, size;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+
+    // Master process creates the array
+    std::vector<int> data;
+    if (rank == 0) {
+        int n = 1000000; // Size of the array
+        data.resize(n);
+        for (int i = 0; i < n; i++) {
+            data[i] = rand() % 1000000;
+        }
+    }
+
+    // Initialize OpenCL
+    cl::Platform platform = cl::Platform::get(&platform);
+    cl::Device device = platform.getDevices(CL_DEVICE_TYPE_GPU)[0];
+    cl::Context context(device);
+    cl::CommandQueue queue(context, device);
+
+    // Scatter data among processes
+    int n = data.size();
+    int chunk_size = n / size;
+    std::vector<int> local_data(chunk_size);
+
+    MPI_Scatter(data.data(), chunk_size, MPI_INT, local_data.data(), chunk_size, MPI_INT, 0, MPI_COMM_WORLD);
+
+    // OpenCL-based sorting on local data
+    opencl_sort(local_data, context, queue);
+
+    // Gather sorted chunks
+    MPI_Gather(local_data.data(), chunk_size, MPI_INT, data.data(), chunk_size, MPI_INT, 0, MPI_COMM_WORLD);
+
+    // Master process prints the result
+    if (rank == 0) {
+        for (int i = 0; i < 10; i++) {
+            std::cout << data[i] << " ";
+        }
+        std::cout << "\n";
+    }
+
+    MPI_Finalize();
+    return 0;
+}
