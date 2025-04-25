@@ -1,0 +1,78 @@
+#include <mpi.h>
+#include <iostream>
+#include <cstdlib>
+#include <ctime>
+
+using namespace std;
+
+void randomVector(int* vector, int size) {
+    for (int i = 0; i < size; i++) {
+        vector[i] = rand() % 100;
+    }
+}
+
+int main(int argc, char* argv[]) {
+    int rank, size;
+    const int totalSize = 10000000;  // 10 million elements
+    int* v1 = nullptr;
+    int* v2 = nullptr;
+    int* v3 = nullptr;
+
+    MPI_Init(&argc, &argv);
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+
+    if (totalSize % size != 0) {
+        if (rank == 0)
+            cout << "Vector size must be divisible by number of processes." << endl;
+        MPI_Finalize();
+        return 1;
+    }
+
+    int chunkSize = totalSize / size;
+    int* local_v1 = (int*)malloc(chunkSize * sizeof(int));
+    int* local_v2 = (int*)malloc(chunkSize * sizeof(int));
+    int* local_v3 = (int*)malloc(chunkSize * sizeof(int));
+
+    if (rank == 0) {
+        v1 = (int*)malloc(totalSize * sizeof(int));
+        v2 = (int*)malloc(totalSize * sizeof(int));
+        v3 = (int*)malloc(totalSize * sizeof(int));
+        srand(time(0));
+        randomVector(v1, totalSize);
+        randomVector(v2, totalSize);
+    }
+
+    // Distribute data from v1 and v2 to all processes
+    MPI_Scatter(v1, chunkSize, MPI_INT, local_v1, chunkSize, MPI_INT, 0, MPI_COMM_WORLD);
+    MPI_Scatter(v2, chunkSize, MPI_INT, local_v2, chunkSize, MPI_INT, 0, MPI_COMM_WORLD);
+
+    // Local addition
+    for (int i = 0; i < chunkSize; i++) {
+        local_v3[i] = local_v1[i] + local_v2[i];
+    }
+
+    // Gather the results back into v3
+    MPI_Gather(local_v3, chunkSize, MPI_INT, v3, chunkSize, MPI_INT, 0, MPI_COMM_WORLD);
+
+    if (rank == 0) {
+        cout << "Vector addition using MPI Scatter and Gather is complete." << endl;
+        // Optional: print first 10 elements for verification
+        cout << "First 10 elements of v3: ";
+        for (int i = 0; i < 10; i++) {
+            cout << v3[i] << " ";
+        }
+        cout << endl;
+
+        free(v1);
+        free(v2);
+        free(v3);
+    }
+
+    free(local_v1);
+    free(local_v2);
+    free(local_v3);
+
+    MPI_Finalize();
+    return 0;
+}
