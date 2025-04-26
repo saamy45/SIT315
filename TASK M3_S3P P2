@@ -1,52 +1,180 @@
-
-#include <iostream>
-#include <vector>
-#include <thread>
+#include <stdio.h>
+#include <stdlib.h>
+#include <CL/cl.h>
 #include <chrono>
+#include <thread>
+#include <vector>
+#define SHOW_OUTPUT 1
 
-int SZ = 100000000;      // Default vector size
-int NUM_THREADS = 8;     // Number of threads
+int N = 100000000;
+int *A, *B, *C;
+cl_mem clA, clB, clC;
+cl_device_id dev;
+cl_context ctx;
+cl_program prog;
+cl_kernel kern;
+cl_command_queue cmdQ;
+cl_event evt = NULL;
+int status;
 
-// Function for each thread to perform part of the addition
-void vector_add(const std::vector<int> &v1, const std::vector<int> &v2, std::vector<int> &v_out, int start, int end) {
-    for (int i = start; i < end; ++i) {
-        v_out[i] = v1[i] + v2[i];
-    }
-}
+cl_device_id get_device();
+void setup_opencl(const char *src, const char *kname);
+cl_program load_program(cl_context ctx, cl_device_id dev, const char *src);
+void create_buffers();
+void set_kernel_args();
+void release_all();
+void fill_data(int *&arr, int n);
+void show_data(int *arr, int n);
+void multi_thread_add(int *a, int *b, int *c, int n, int threads);
 
 int main(int argc, char **argv) {
-    if (argc == 2)
-        SZ = std::stoi(argv[1]);
-
-    std::vector<int> v1(SZ), v2(SZ), v_out(SZ);
-
-    // Initialize vectors with random values
-    for (int i = 0; i < SZ; ++i) {
-        v1[i] = rand() % 100;
-        v2[i] = rand() % 100;
+    if (argc > 1) {
+        N = atoi(argv[1]);
     }
+    fill_data(A, N);
+    fill_data(B, N);
+    fill_data(C, N);
+    size_t gws[1] = { (size_t)N };
+    show_data(A, N);
+    show_data(B, N);
 
-    auto start_time = std::chrono::high_resolution_clock::now();
+    setup_opencl("./vector_ops_ocl.cl", "vector_add_ocl");
+    create_buffers();
+    set_kernel_args();
 
-    std::vector<std::thread> threads;
-    int chunk = SZ / NUM_THREADS;
+    auto t1 = std::chrono::high_resolution_clock::now();
+    clEnqueueNDRangeKernel(cmdQ, kern, 1, NULL, gws, NULL, 0, NULL, &evt);
+    clWaitForEvents(1, &evt);
+    clEnqueueReadBuffer(cmdQ, clC, CL_TRUE, 0, N * sizeof(int), C, 0, NULL, NULL);
+    auto t2 = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double, std::milli> cl_time = t2 - t1;
 
-    // Create threads
-    for (int i = 0; i < NUM_THREADS; ++i) {
-        int start = i * chunk;
-        int end = (i == NUM_THREADS - 1) ? SZ : (i + 1) * chunk;
-        threads.emplace_back(vector_add, std::ref(v1), std::ref(v2), std::ref(v_out), start, end);
-    }
+    show_data(C, N);
+    printf("OpenCL Time: %.3f ms\n", cl_time.count());
 
-    // Join all threads
-    for (auto &t : threads) {
-        t.join();
-    }
+    t1 = std::chrono::high_resolution_clock::now();
+    multi_thread_add(A, B, C, N, 4);
+    t2 = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double, std::milli> mt_time = t2 - t1;
 
-    auto end_time = std::chrono::high_resolution_clock::now();
-    std::chrono::duration<double, std::milli> elapsed = end_time - start_time;
+    printf("Multithread Time: %.3f ms\n", mt_time.count());
 
-    std::cout << "Multithreaded CPU Execution Time: " << elapsed.count() << " ms\n";
-
+    release_all();
     return 0;
 }
+void fill_data(int *&arr, int n) {
+    arr = (int *)malloc(sizeof(int) * n);
+    for (int i = 0; i < n; ++i) {
+        arr[i] = rand() % 100;
+    }}
+void show_data(int *arr, int n) {
+    if (SHOW_OUTPUT == 0) return;
+    if (SHOW_OUTPUT == 1 && n > 15) {
+        for (int i = 0; i < 5; i++) printf("%d ", arr[i]);
+        printf("... ");
+        for (int i = n - 5; i < n; i++) printf("%d ", arr[i]);
+    } else {
+        for (int i = 0; i < n; i++) printf("%d ", arr[i]);
+    }
+    printf("\n----------------------------\n");
+}
+void release_all() {
+    clReleaseMemObject(clA);
+    clReleaseMemObject(clB);
+    clReleaseMemObject(clC);
+    clReleaseKernel(kern);
+    clReleaseCommandQueue(cmdQ);
+    clReleaseProgram(prog);
+    clReleaseContext(ctx);
+    free(A);
+    free(B);
+    free(C);
+}
+void set_kernel_args() {
+    clSetKernelArg(kern, 0, sizeof(int), &N);
+    clSetKernelArg(kern, 1, sizeof(cl_mem), &clA);
+    clSetKernelArg(kern, 2, sizeof(cl_mem), &clB);
+    clSetKernelArg(kern, 3, sizeof(cl_mem), &clC);
+    if (status < 0) {
+        perror("Arg set fail");
+        exit(1);
+    }}
+void create_buffers() {
+    clA = clCreateBuffer(ctx, CL_MEM_READ_ONLY, N * sizeof(int), NULL, NULL);
+    clB = clCreateBuffer(ctx, CL_MEM_READ_ONLY, N * sizeof(int), NULL, NULL);
+    clC = clCreateBuffer(ctx, CL_MEM_WRITE_ONLY, N * sizeof(int), NULL, NULL);
+    clEnqueueWriteBuffer(cmdQ, clA, CL_TRUE, 0, N * sizeof(int), A, 0, NULL, NULL);
+    clEnqueueWriteBuffer(cmdQ, clB, CL_TRUE, 0, N * sizeof(int), B, 0, NULL, NULL);
+}
+void setup_opencl(const char *src, const char *kname) {
+    dev = get_device();
+    ctx = clCreateContext(NULL, 1, &dev, NULL, NULL, &status);
+    prog = load_program(ctx, dev, src);
+    cmdQ = clCreateCommandQueueWithProperties(ctx, dev, 0, &status);
+    kern = clCreateKernel(prog, kname, &status);
+}
+cl_program load_program(cl_context ctx, cl_device_id dev, const char *src) {
+    FILE *fp = fopen(src, "r");
+    if (!fp) {
+        perror("Missing kernel src");
+        exit(1);
+    }
+    fseek(fp, 0, SEEK_END);
+    size_t size = ftell(fp);
+    rewind(fp);
+    char *buf = (char *)malloc(size + 1);
+    buf[size] = '\0';
+    fread(buf, sizeof(char), size, fp);
+    fclose(fp);
+    cl_program p = clCreateProgramWithSource(ctx, 1, (const char **)&buf, &size, &status);
+    free(buf);
+    if (status < 0) {
+        perror("Program creation error");
+        exit(1);
+    }
+    status = clBuildProgram(p, 0, NULL, NULL, NULL, NULL);
+    if (status < 0) {
+        size_t logSize;
+        clGetProgramBuildInfo(p, dev, CL_PROGRAM_BUILD_LOG, 0, NULL, &logSize);
+        char *log = (char *)malloc(logSize + 1);
+        log[logSize] = '\0';
+        clGetProgramBuildInfo(p, dev, CL_PROGRAM_BUILD_LOG, logSize, log, NULL);
+        printf("%s\n", log);
+        free(log);
+        exit(1);
+    }
+    return p;
+}
+cl_device_id get_device() {
+    cl_platform_id plat;
+    cl_device_id d;
+    status = clGetPlatformIDs(1, &plat, NULL);
+    if (status < 0) {
+        perror("No platform");
+        exit(1);
+    }
+    status = clGetDeviceIDs(plat, CL_DEVICE_TYPE_GPU, 1, &d, NULL);
+    if (status == CL_DEVICE_NOT_FOUND) {
+        printf("GPU unavailable. Switching to CPU...\n");
+        status = clGetDeviceIDs(plat, CL_DEVICE_TYPE_CPU, 1, &d, NULL);
+    }
+    if (status < 0) {
+        perror("No device");
+        exit(1);
+    }
+    return d;
+}
+void multi_thread_add(int *a, int *b, int *c, int n, int threads) {
+    int seg = n / threads;
+    std::vector<std::thread> ths;
+    for (int i = 0; i < threads; ++i) {
+        ths.emplace_back([=]() {
+            int s = i * seg;
+            int e = (i == threads - 1) ? n : s + seg;
+            for (int j = s; j < e; ++j) {
+                c[j] = a[j] + b[j];
+            }
+        }); }
+    for (auto &t : ths) {
+        t.join();
+    }}
