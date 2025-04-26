@@ -1,131 +1,219 @@
-#include <CL/cl.h>
-#include <iostream>
-#include <vector>
-#include <fstream>
-#include <sstream>
-#include <chrono>
+#include <stdio.h>
+#include <stdlib.h>
+#include <CL/cl.h>        // OpenCL header
+#include <chrono>         // For timing measurements
+#define PRINT 1           // Flag to control output printing
+int SZ = 100000000;       // Default vector size (100 million elements)
 
-// Global variables
-int SZ;
-std::vector<int> v1, v2, v_out;
-cl_context context;
-cl_command_queue queue;
-cl_program program;
-cl_kernel kernel;
+// Pointers for host vectors
+int *v1, *v2, *v_out;
+// OpenCL memory buffers (device memory)
 cl_mem bufV1, bufV2, bufV_out;
 
-// Initialize vectors with random integers
-void init(std::vector<int> &v, int size) {
-    v.resize(size);
-    for (int i = 0; i < size; ++i) {
-        v[i] = rand() % 100;
+// OpenCL handles
+cl_device_id device_id;   // Represents the compute device (GPU/CPU)
+cl_context context;       // OpenCL context
+cl_program program;       // Compiled OpenCL program
+cl_kernel kernel;         // The actual kernel function
+cl_command_queue queue;   // Command queue for device operations
+cl_event event = NULL;    // For tracking kernel execution
+int err;                  // Stores OpenCL error codes
+
+// Fills a vector with random integers (0-99)
+void init(int *A, int size) {
+    A = (int *)malloc(sizeof(int) * size);
+    for (int i = 0; i < size; i++) {
+        A[i] = rand() % 100;
+    }}
+
+// Prints vector contents (abbreviated for large vectors)
+void print(int *A, int size) {
+    if (PRINT == 0) return; // Skip if printing disabled
+    if (PRINT == 1 && size > 15) {
+        // Print first and last 5 elements for large vectors
+        for (long i = 0; i < 5; i++) printf("%d ", A[i]);
+        printf(" ..... ");
+        for (long i = size - 5; i < size; i++) printf("%d ", A[i]);
+    } else {
+        // Print all elements for small vectors
+        for (long i = 0; i < size; i++) printf("%d ", A[i]);
     }
+    printf("\n-------------------------------\n");
 }
 
-// Print part of the vector
-void print(const std::vector<int> &v, int size) {
-    for (int i = 0; i < 10 && i < size; ++i) {
-        std::cout << v[i] << " ";
-    }
-    std::cout << "\n";
-}
-
-// Read OpenCL source file
-std::string readKernelSource(const char *filename) {
-    std::ifstream file(filename);
-    std::ostringstream oss;
-    oss << file.rdbuf();
-    return oss.str();
-}
-
-// Setup OpenCL context, device, and kernel
-void setup_openCL_device_context_queue_kernel(const char *filename, const char *kernelname) {
-    cl_device_id device;
+// Finds and returns an OpenCL device (prefers GPU, falls back to CPU)
+cl_device_id create_device() {
     cl_platform_id platform;
-    cl_int err;
+    cl_device_id dev;
+    int err;
 
-    // Get platform
-    clGetPlatformIDs(1, &platform, NULL);
-    clGetDeviceIDs(platform, CL_DEVICE_TYPE_GPU, 1, &device, NULL);
+    // Get first available platform
+    err = clGetPlatformIDs(1, &platform, NULL);
+    if (err < 0) {
+        perror("Couldn't identify a platform");
+        exit(1);
+    }
 
-    // Create context and command queue
-    context = clCreateContext(0, 1, &device, NULL, NULL, &err);
-    queue = clCreateCommandQueue(context, device, 0, &err);
+    // Get first GPU device
+    err = clGetDeviceIDs(platform, CL_DEVICE_TYPE_GPU, 1, &dev, NULL);
+    if (err == CL_DEVICE_NOT_FOUND) {
+        // Fallback to CPU
+        err = clGetDeviceIDs(platform, CL_DEVICE_TYPE_CPU, 1, &dev, NULL);
+    }
+    if (err < 0) {
+        perror("Couldn't access any devices");
+        exit(1);
+    }
 
-    // Read and build program
-    std::string source = readKernelSource(filename);
-    const char *src = source.c_str();
-    size_t src_size = source.length();
-    program = clCreateProgramWithSource(context, 1, &src, &src_size, &err);
-    clBuildProgram(program, 0, NULL, NULL, NULL, NULL);
-
-    // Create kernel
-    kernel = clCreateKernel(program, kernelname, &err);
+    return dev;
 }
 
-// Setup memory buffers
-void setup_kernel_memory() {
-    bufV1 = clCreateBuffer(context, CL_MEM_READ_ONLY, SZ * sizeof(int), NULL, NULL);
-    bufV2 = clCreateBuffer(context, CL_MEM_READ_ONLY, SZ * sizeof(int), NULL, NULL);
-    bufV_out = clCreateBuffer(context, CL_MEM_WRITE_ONLY, SZ * sizeof(int), NULL, NULL);
+// Compiles the OpenCL kernel from source file
+cl_program build_program(cl_context ctx, cl_device_id dev, const char *filename) {
+    cl_program program;
+    FILE *program_handle;
+    char *program_buffer, *program_log;
+    size_t program_size, log_size;
 
+    // Open kernel file
+    program_handle = fopen(filename, "r");
+    if (program_handle == NULL) {
+        perror("Couldn't find the program file");
+        exit(1);
+    }
+
+    // Read file contents
+    fseek(program_handle, 0, SEEK_END);
+    program_size = ftell(program_handle);
+    rewind(program_handle);
+    program_buffer = (char *)malloc(program_size + 1);
+    program_buffer[program_size] = '\0';
+    fread(program_buffer, sizeof(char), program_size, program_handle);
+    fclose(program_handle);
+    // Create program from source
+    program = clCreateProgramWithSource(ctx, 1, (const char **)&program_buffer, &program_size, &err);
+    if (err < 0) {
+        perror("Couldn't create the program");
+        exit(1);
+    }
+    free(program_buffer);
+    return program;
+}
+
+// Setup OpenCL device, context, queue, and kernel
+void setup_opencl_device_context_queue_kernel(const char *fileName, const char *kernelName) {
+    device_id = create_device();
+
+    // Create a context
+    context = clCreateContext(NULL, 1, &device_id, NULL, NULL, &err);
+    if (err < 0) {
+        perror("Couldn't create a context");
+        exit(1);
+    }
+    // Build the program
+    program = build_program(context, device_id, fileName);
+    err = clBuildProgram(program, 0, NULL, NULL, NULL, NULL);
+    if (err < 0) {
+        perror("Couldn't build the program");
+        exit(1);
+    }
+    // Create a kernel
+    kernel = clCreateKernel(program, kernelName, &err);
+    if (err < 0) {
+        perror("Couldn't create a kernel");
+        exit(1);
+    }
+    // Create a command queue
+    queue = clCreateCommandQueue(context, device_id, 0, &err);
+    if (err < 0) {
+        perror("Couldn't create a command queue");
+        exit(1);
+    }}
+// Allocate device memory and copy data
+void setup_kernel_memory() {
+    // Create buffers on device
+    bufV1 = clCreateBuffer(context, CL_MEM_READ_WRITE, SZ * sizeof(int), NULL, NULL);
+    bufV2 = clCreateBuffer(context, CL_MEM_READ_WRITE, SZ * sizeof(int), NULL, NULL);
+    bufV_out = clCreateBuffer(context, CL_MEM_READ_WRITE, SZ * sizeof(int), NULL, NULL);
+
+    // Copy data from host to device
     clEnqueueWriteBuffer(queue, bufV1, CL_TRUE, 0, SZ * sizeof(int), &v1[0], 0, NULL, NULL);
     clEnqueueWriteBuffer(queue, bufV2, CL_TRUE, 0, SZ * sizeof(int), &v2[0], 0, NULL, NULL);
 }
 
-// Set kernel arguments
+// Sets kernel arguments
 void copy_kernel_args() {
     clSetKernelArg(kernel, 0, sizeof(int), (void *)&SZ);
     clSetKernelArg(kernel, 1, sizeof(cl_mem), (void *)&bufV1);
     clSetKernelArg(kernel, 2, sizeof(cl_mem), (void *)&bufV2);
     clSetKernelArg(kernel, 3, sizeof(cl_mem), (void *)&bufV_out);
-}
 
-// Execute the kernel and read the result
-void run_kernel() {
-    size_t global = SZ;
-    cl_event event;
-    clEnqueueNDRangeKernel(queue, kernel, 1, NULL, &global, NULL, 0, NULL, &event);
-    clWaitForEvents(1, &event);
-
-    clEnqueueReadBuffer(queue, bufV_out, CL_TRUE, 0, SZ * sizeof(int), &v_out[0], 0, NULL, NULL);
-}
-
-// Free OpenCL resources
+    if (err < 0) {
+        perror("Couldn't create a kernel argument");
+        printf("error = %d", err);
+        exit(1);
+    }}
+// Releases all allocated resources
 void free_memory() {
+    // Release OpenCL resources
     clReleaseMemObject(bufV1);
     clReleaseMemObject(bufV2);
     clReleaseMemObject(bufV_out);
     clReleaseKernel(kernel);
-    clReleaseProgram(program);
     clReleaseCommandQueue(queue);
+    clReleaseProgram(program);
     clReleaseContext(context);
+    // Free host memory
+    free(v1);
+    free(v2);
+    free(v_out);
 }
-
 int main(int argc, char **argv) {
-    if (argc != 2) {
-        std::cerr << "Usage: ./vector_ops <size>\n";
-        return 1;
-    }
+    // Handle command-line argument for vector size
+    if (argc > 1)
+        SZ = atoi(argv[1]);
 
-    SZ = std::stoi(argv[1]);
-
+    // Initialize vectors with random values
     init(v1, SZ);
     init(v2, SZ);
-    init(v_out, SZ); // Initialize result vector
+    init(v_out, SZ);
+    // Define global work size (total number of work-items)
+    size_t global[1] = {(size_t)SZ};
+    // Print sample vectors if enabled
+    print(v1, SZ);
+    print(v2, SZ);
+    // Set up OpenCL environment
+    setup_opencl_device_context_queue_kernel(
+        (char *)"./vector_ops_ocl.cl",   // Kernel source file
+        (char *)"vector_add_ocl"          // Kernel function name
+    );
 
-    setup_openCL_device_context_queue_kernel("vector_ops_ocl.cl", "vector_add_ocl");
+    // Allocate device memory and copy data
     setup_kernel_memory();
+
+    // Set kernel arguments
     copy_kernel_args();
 
+    // Start timer
     auto start = std::chrono::high_resolution_clock::now();
-    run_kernel();
-    auto stop = std::chrono::high_resolution_clock::now();
 
+    // Execute the kernel
+    clEnqueueNDRangeKernel(queue, kernel, 1, NULL, global, NULL, 0, NULL, &event);
+    clWaitForEvents(1, &event);
+
+    // Read results back from device
+    clEnqueueReadBuffer(queue, bufV_out, CL_TRUE, 0, SZ * sizeof(int), &v_out[0], 0, NULL, NULL);
+
+    // End timer
+    auto end = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double> diff = end - start;
+    printf("Time to add vectors: %lf s\n", diff.count());
+
+    // Print sample output
     print(v_out, SZ);
-    std::chrono::duration<double, std::milli> elapsed_time = stop - start;
-    std::cout << "OpenCL Kernel Execution Time: " << elapsed_time.count() << " ms\n";
 
+    // Free all allocated memory
     free_memory();
+
     return 0;
 }
