@@ -1,94 +1,65 @@
-#include <CL/cl.hpp>
-#include <mpi.h>
 #include <iostream>
-#include <vector>
-#include <algorithm>
-#include <ctime>
+#include <stdlib.h>
+#include <time.h>
+#include <mpi.h>
+#include <CL/cl.hpp>
 
-// OpenCL kernel for sorting
-const char* kernel_code = R"(
-__kernel void quicksort_kernel(__global int* arr, int low, int high) {
-    if (low < high) {
-        int pivot = arr[high];
-        int i = low - 1;
-        for (int j = low; j < high; j++) {
-            if (arr[j] <= pivot) {
-                i++;
-                int temp = arr[i];
-                arr[i] = arr[j];
-                arr[j] = temp;
-            }
-        }
-        int temp = arr[i + 1];
-        arr[i + 1] = arr[high];
-        arr[high] = temp;
-        quicksort_kernel(arr, low, i);
-        quicksort_kernel(arr, i + 2, high);
-    }
-}
-)";
+#define ELEMENTS 1000000
+#define GROUP_SIZE 256
+#define LOCAL_ELEMENTS GROUP_SIZE
 
-void opencl_sort(std::vector<int>& arr, cl::Context context, cl::CommandQueue queue) {
-    cl::Program::Sources sources(1, std::make_pair(kernel_code, strlen(kernel_code)));
-    cl::Program program(context, sources);
-    program.build();
-
-    cl::Buffer buffer(context, CL_MEM_READ_WRITE, arr.size() * sizeof(int));
-    queue.enqueueWriteBuffer(buffer, CL_TRUE, 0, arr.size() * sizeof(int), arr.data());
-
-    cl::Kernel kernel(program, "quicksort_kernel");
-    kernel.setArg(0, buffer);
-    kernel.setArg(1, 0); // low
-    kernel.setArg(2, arr.size() - 1); // high
-
-    queue.enqueueNDRangeKernel(kernel, cl::NullRange, cl::NDRange(arr.size()), cl::NullRange);
-    queue.finish();
-
-    queue.enqueueReadBuffer(buffer, CL_TRUE, 0, arr.size() * sizeof(int), arr.data());
-}
-
-int main(int argc, char* argv[]) {
+int main(int argc, char *argv[])
+{
+    int proc_id, proc_count;
     MPI_Init(&argc, &argv);
+    MPI_Comm_rank(MPI_COMM_WORLD, &proc_id);
+    MPI_Comm_size(MPI_COMM_WORLD, &proc_count);
 
-    int rank, size;
-    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-    MPI_Comm_size(MPI_COMM_WORLD, &size);
+    srand(time(NULL) + proc_id);
 
-    // Master process creates the array
-    std::vector<int> data;
-    if (rank == 0) {
-        int n = 1000000; // Size of the array
-        data.resize(n);
-        for (int i = 0; i < n; i++) {
-            data[i] = rand() % 1000000;
-        }
+    int chunk_size = ELEMENTS / proc_count;
+    int chunk_data[chunk_size];
+    for (int i = 0; i < chunk_size; i++)
+    {
+        chunk_data[i] = rand() % 20;
     }
 
-    // Initialize OpenCL
-    cl::Platform platform = cl::Platform::get(&platform);
-    cl::Device device = platform.getDevices(CL_DEVICE_TYPE_GPU)[0];
-    cl::Context context(device);
-    cl::CommandQueue queue(context, device);
+    cl::Context gpu_context(CL_DEVICE_TYPE_GPU);
+    std::vector<cl::Device> gpu_devices = gpu_context.getInfo<CL_CONTEXT_DEVICES>();
+    cl::CommandQueue cmd_queue(gpu_context, gpu_devices[0]);
 
-    // Scatter data among processes
-    int n = data.size();
-    int chunk_size = n / size;
-    std::vector<int> local_data(chunk_size);
+    cl::Buffer buf_input(gpu_context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, chunk_size * sizeof(int), chunk_data);
+    cl::Buffer buf_output(gpu_context, CL_MEM_WRITE_ONLY, sizeof(int));
 
-    MPI_Scatter(data.data(), chunk_size, MPI_INT, local_data.data(), chunk_size, MPI_INT, 0, MPI_COMM_WORLD);
+    cl::Program cl_program(gpu_context, 
+        "#pragma OPENCL EXTENSION cl_khr_global_int32_base_atomics : enable\n"
+        "__kernel void compute_sum(__global int *input, __global int *output, const int local_size) { \n"
+        "int total = 0; \n"
+        "__global int *data = input + get_global_id(0) * local_size; \n"
+        "for (int i = 0; i < local_size; i++) { \n"
+        "total += data[i]; \n"
+        "} \n"
+        "atom_add(output, total); \n"
+        "}");
 
-    // OpenCL-based sorting on local data
-    opencl_sort(local_data, context, queue);
+    cl_program.build(gpu_devices);
+    cl::Kernel cl_kernel(cl_program, "compute_sum");
 
-    // Gather sorted chunks
-    MPI_Gather(local_data.data(), chunk_size, MPI_INT, data.data(), chunk_size, MPI_INT, 0, MPI_COMM_WORLD);
+    cl_kernel.setArg(0, buf_input);
+    cl_kernel.setArg(1, buf_output);
+    cl_kernel.setArg(2, chunk_size);
 
-    // Master process prints the result
-    if (rank == 0) {
-        for (int i = 0; i < 10; i++) {
-            std::cout << data[i] << " ";
-        }
-        std::cout << "\n";
+    cmd_queue.enqueueNDRangeKernel(cl_kernel, cl::NullRange, cl::NDRange(chunk_size / GROUP_SIZE), cl::NDRange(GROUP_SIZE));
+
+    int partial_sum;
+    cmd_queue.enqueueReadBuffer(buf_output, CL_TRUE, 0, sizeof(int), &partial_sum);
+
+    long total_sum;
+    MPI_Reduce(&partial_sum, &total_sum, 1, MPI_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
+
+    if (proc_id == 0)
+    {
+        std::cout << "Final sum = " << total_sum << std::endl;
     }
 
     MPI_Finalize();
