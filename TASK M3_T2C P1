@@ -1,67 +1,114 @@
+// mpi_parallel_quicksort.c
 #include <mpi.h>
-#include <iostream>
-#include <vector>
-#include <algorithm>
-#include <ctime>
+#include <stdio.h>
+#include <stdlib.h>
+void quicksort(int *arr, int low, int high);
+int partition(int *arr, int low, int high);
 
-// Function to perform quicksort locally
-void quicksort(std::vector<int>& arr, int low, int high) {
+// Local quicksort
+void quicksort(int *arr, int low, int high) {
     if (low < high) {
-        int pivot = arr[high];
-        int i = (low - 1);
-
-        for (int j = low; j < high; j++) {
-            if (arr[j] <= pivot) {
-                i++;
-                std::swap(arr[i], arr[j]);
-            }
-        }
-        std::swap(arr[i + 1], arr[high]);
-        int pi = i + 1;
-        quicksort(arr, low, pi - 1);
-        quicksort(arr, pi + 1, high);
+        int pivot = partition(arr, low, high);
+        quicksort(arr, low, pivot - 1);
+        quicksort(arr, pivot + 1, high);
     }
 }
 
-int main(int argc, char* argv[]) {
-    MPI_Init(&argc, &argv);
+// Partition function
+int partition(int *arr, int low, int high) {
+    int pivot = arr[high];
+    int i = (low - 1);
+    for (int j = low; j <= high -1; j++) {
+        if (arr[j] < pivot) {
+            i++;
+            int tmp = arr[i];
+            arr[i] = arr[j];
+            arr[j] = tmp;
+        }
+    }
+    int tmp = arr[i+1];
+    arr[i+1] = arr[high];
+    arr[high] = tmp;
+    return i+1;
+}
 
+// Merge two sorted arrays
+void merge(int* arr1, int n1, int* arr2, int n2, int* result) {
+    int i = 0, j = 0, k = 0;
+    while(i < n1 && j < n2) {
+        if(arr1[i] < arr2[j]) result[k++] = arr1[i++];
+        else result[k++] = arr2[j++];
+    }
+    while(i < n1) result[k++] = arr1[i++];
+    while(j < n2) result[k++] = arr2[j++];
+}
+
+int main(int argc, char** argv) {
     int rank, size;
+    int *data = NULL;
+    int *local_data = NULL;
+    int n = 1000000; // 1 million numbers
+    double start_time, end_time;
+
+    MPI_Init(&argc, &argv);
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &size);
 
-    // Master process creates the array
-    std::vector<int> data;
+    int local_n = n / size;
+
+    local_data = (int*)malloc(local_n * sizeof(int));
+
     if (rank == 0) {
-        int n = 1000000; // Size of the array
-        data.resize(n);
+        data = (int*)malloc(n * sizeof(int));
         for (int i = 0; i < n; i++) {
-            data[i] = rand() % 1000000;
+            data[i] = rand();
         }
     }
 
-    // Scatter data among processes
-    int n = data.size();
-    int chunk_size = n / size;
-    std::vector<int> local_data(chunk_size);
+    MPI_Barrier(MPI_COMM_WORLD); // Sync before timing
+    start_time = MPI_Wtime();
 
-    MPI_Scatter(data.data(), chunk_size, MPI_INT, local_data.data(), chunk_size, MPI_INT, 0, MPI_COMM_WORLD);
+    // Scatter data to all processes
+    MPI_Scatter(data, local_n, MPI_INT, local_data, local_n, MPI_INT, 0, MPI_COMM_WORLD);
 
-    // Each process sorts its chunk
-    quicksort(local_data, 0, chunk_size - 1);
+    // Local quicksort
+    quicksort(local_data, 0, local_n - 1);
 
-    // Gather sorted chunks
-    MPI_Gather(local_data.data(), chunk_size, MPI_INT, data.data(), chunk_size, MPI_INT, 0, MPI_COMM_WORLD);
+    // Now merge step-by-step
+    int step = 1;
+    while (step < size) {
+        if (rank % (2*step) == 0) {
+            if (rank + step < size) {
+                int recv_size;
+                MPI_Recv(&recv_size, 1, MPI_INT, rank + step, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+                int* recv_data = (int*)malloc(recv_size * sizeof(int));
+                MPI_Recv(recv_data, recv_size, MPI_INT, rank + step, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 
-    // Master process prints the result
+                int* merged = (int*)malloc((local_n + recv_size) * sizeof(int));
+                merge(local_data, local_n, recv_data, recv_size, merged);
+
+                free(local_data);
+                free(recv_data);
+
+                local_data = merged;
+                local_n = local_n + recv_size;
+            }
+        } else {
+            int near = rank - step;
+            MPI_Send(&local_n, 1, MPI_INT, near, 0, MPI_COMM_WORLD);
+            MPI_Send(local_data, local_n, MPI_INT, near, 0, MPI_COMM_WORLD);
+            break;
+        }
+        step = step * 2;
+    }
     if (rank == 0) {
-        // Optional: Print first 10 elements for verification
-        for (int i = 0; i < 10; i++) {
-            std::cout << data[i] << " ";
-        }
-        std::cout << "\n";
+        end_time = MPI_Wtime();
+        printf("MPI Parallel Quicksort (with merging) completed in %f seconds.\n", end_time - start_time);
+        free(data);
+        free(local_data);
+    } else {
+        free(local_data);
     }
-
     MPI_Finalize();
     return 0;
 }
