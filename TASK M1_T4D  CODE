@@ -1,88 +1,140 @@
 #include <mpi.h>
 #include <iostream>
 #include <fstream>
+#include <sstream>
+#include <unordered_map>
+#include <queue>
 #include <vector>
-#include <map>
-#include <tuple>
-#include <algorithm>
+#include <string>
+#include <ctime>
+#include <iomanip>
 
-#define TOP_N 3
+using namespace std;
 
 struct TrafficRecord {
-    int timestamp;
-    int signal_id;
-    int cars_passed;
+    int hour;
+    int signalID;
+    int cars;
 };
+
+int extractHour(const string& timestamp) {
+    struct tm timeinfo = {};
+    istringstream ss(timestamp);
+    ss >> get_time(&timeinfo, "%Y-%m-%d %H:%M:%S");
+    return timeinfo.tm_hour;
+}
+
+void master(const string& filename, int size, int N) {
+    ifstream file(filename);
+    string line;
+    int dest = 1;
+    MPI_Request send_request;
+
+    while (getline(file, line)) {
+        MPI_Isend(line.c_str(), line.length() + 1, MPI_CHAR, dest, 0, MPI_COMM_WORLD, &send_request);
+        dest = (dest % (size - 1)) + 1;
+    }
+
+    // Send termination signal to all workers
+    string end_msg = "END";
+    for (int i = 1; i < size; i++) {
+        MPI_Isend(end_msg.c_str(), end_msg.length() + 1, MPI_CHAR, i, 0, MPI_COMM_WORLD, &send_request);
+    }
+
+    // Receive partial results
+    unordered_map<int, unordered_map<int, int>> global_map; // hour -> signalID -> count
+
+    for (int i = 1; i < size; ++i) {
+        int size_of_data;
+        MPI_Recv(&size_of_data, 1, MPI_INT, i, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+
+        for (int j = 0; j < size_of_data; ++j) {
+            int hour, signalID, count;
+            MPI_Recv(&hour, 1, MPI_INT, i, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+            MPI_Recv(&signalID, 1, MPI_INT, i, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+            MPI_Recv(&count, 1, MPI_INT, i, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+            global_map[hour][signalID] += count;
+        }
+    }
+
+    // Print top N for each hour
+    for (auto& [hour, signalMap] : global_map) {
+        cout << "Hour: " << hour << "\n";
+        priority_queue<pair<int, int>> pq;
+
+        for (auto& [signal, count] : signalMap) {
+            pq.push({count, signal});
+        }
+
+        for (int i = 0; i < N && !pq.empty(); ++i) {
+            auto top = pq.top(); pq.pop();
+            cout << "TL" << top.second << " - " << top.first << " cars\n";
+        }
+        cout << "------------------\n";
+    }
+}
+
+void worker(int rank) {
+    unordered_map<int, unordered_map<int, int>> hour_signal_map;
+    MPI_Request recv_request;
+    char buffer[256];
+
+    while (true) {
+        MPI_Recv(&buffer, 256, MPI_CHAR, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        string msg(buffer);
+        if (msg == "END") break;
+
+        istringstream ss(msg);
+        string timestamp, signalStr, carStr;
+
+        getline(ss, timestamp, ',');
+        getline(ss, signalStr, ',');
+        getline(ss, carStr, ',');
+
+        int hour = extractHour(timestamp);
+        int signal = stoi(signalStr);
+        int cars = stoi(carStr);
+
+        hour_signal_map[hour][signal] += cars;
+    }
+
+    // Send aggregated data
+    int data_size = 0;
+    for (auto& hourEntry : hour_signal_map)
+        data_size += hourEntry.second.size();
+
+    MPI_Send(&data_size, 1, MPI_INT, 0, 0, MPI_COMM_WORLD);
+
+    for (auto& [hour, signalMap] : hour_signal_map) {
+        for (auto& [signal, count] : signalMap) {
+            MPI_Send(&hour, 1, MPI_INT, 0, 0, MPI_COMM_WORLD);
+            MPI_Send(&signal, 1, MPI_INT, 0, 0, MPI_COMM_WORLD);
+            MPI_Send(&count, 1, MPI_INT, 0, 0, MPI_COMM_WORLD);
+        }
+    }
+}
 
 int main(int argc, char** argv) {
     MPI_Init(&argc, &argv);
-    int world_rank, world_size;
-    MPI_Comm_rank(MPI_COMM_WORLD, &world_rank);
-    MPI_Comm_size(MPI_COMM_WORLD, &world_size);
 
-    std::vector<TrafficRecord> localRecords;
-    std::map<int, int> localAggregation;
+    int rank, size;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
 
-    if (world_rank == 0) {
-        std::ifstream file("traffic_data.txt");
-        if (!file.is_open()) {
-            std::cerr << "Failed to open data file.\n";
-            MPI_Abort(MPI_COMM_WORLD, 1);
-        }
-
-        int timestamp, signal_id, cars_passed;
-        int target = 1;
-
-        while (file >> timestamp >> signal_id >> cars_passed) {
-            TrafficRecord rec = { timestamp, signal_id, cars_passed };
-            MPI_Send(&rec, sizeof(TrafficRecord), MPI_BYTE, target, 0, MPI_COMM_WORLD);
-            target = (target % (world_size - 1)) + 1;
-        }
-
-        // Send termination signals
-        for (int i = 1; i < world_size; i++) {
-            TrafficRecord dummy = { -1, -1, -1 };
-            MPI_Send(&dummy, sizeof(TrafficRecord), MPI_BYTE, i, 1, MPI_COMM_WORLD);
-        }
-
-        // Gather from all consumers
-        std::map<int, int> finalCounts;
-        for (int i = 1; i < world_size; i++) {
-            int count;
-            MPI_Recv(&count, 1, MPI_INT, i, 2, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-            for (int j = 0; j < count; j++) {
-                int signal_id, total;
-                MPI_Recv(&signal_id, 1, MPI_INT, i, 3, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-                MPI_Recv(&total, 1, MPI_INT, i, 4, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-                finalCounts[signal_id] += total;
-            }
-        }
-
-        std::vector<std::pair<int, int>> sorted(finalCounts.begin(), finalCounts.end());
-        std::sort(sorted.begin(), sorted.end(), [](auto &a, auto &b) {
-            return a.second > b.second;
-        });
-
-        std::cout << "\nTop " << TOP_N << " Congested Signals:\n";
-        for (int i = 0; i < std::min(TOP_N, (int)sorted.size()); ++i) {
-            std::cout << "Signal " << sorted[i].first << " - Cars Passed: " << sorted[i].second << "\n";
-        }
-    } else {
-        while (true) {
-            TrafficRecord rec;
-            MPI_Recv(&rec, sizeof(TrafficRecord), MPI_BYTE, 0, MPI_ANY_TAG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-            if (rec.timestamp == -1) break;
-            localAggregation[rec.signal_id] += rec.cars_passed;
-        }
-
-        int localSize = localAggregation.size();
-        MPI_Send(&localSize, 1, MPI_INT, 0, 2, MPI_COMM_WORLD);
-
-        for (auto &entry : localAggregation) {
-            MPI_Send(&entry.first, 1, MPI_INT, 0, 3, MPI_COMM_WORLD);
-            MPI_Send(&entry.second, 1, MPI_INT, 0, 4, MPI_COMM_WORLD);
-        }
+    if (argc < 3) {
+        if (rank == 0)
+            cerr << "Usage: " << argv[0] << " <data_file> <TopN>\n";
+        MPI_Finalize();
+        return 1;
     }
+
+    string filename = argv[1];
+    int topN = stoi(argv[2]);
+
+    if (rank == 0)
+        master(filename, size, topN);
+    else
+        worker(rank);
 
     MPI_Finalize();
     return 0;
