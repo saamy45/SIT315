@@ -8,7 +8,6 @@
 #include <string>
 #include <ctime>
 #include <iomanip>
-
 using namespace std;
 
 struct TrafficRecord {
@@ -16,31 +15,26 @@ struct TrafficRecord {
     int signalID;
     int cars;
 };
-
 int extractHour(const string& timestamp) {
     struct tm timeinfo = {};
     istringstream ss(timestamp);
     ss >> get_time(&timeinfo, "%Y-%m-%d %H:%M:%S");
     return timeinfo.tm_hour;
 }
-
 void master(const string& filename, int size, int N) {
     ifstream file(filename);
     string line;
     int dest = 1;
     MPI_Request send_request;
-
     while (getline(file, line)) {
         MPI_Isend(line.c_str(), line.length() + 1, MPI_CHAR, dest, 0, MPI_COMM_WORLD, &send_request);
         dest = (dest % (size - 1)) + 1;
     }
-
     // Send termination signal to all workers
     string end_msg = "END";
     for (int i = 1; i < size; i++) {
         MPI_Isend(end_msg.c_str(), end_msg.length() + 1, MPI_CHAR, i, 0, MPI_COMM_WORLD, &send_request);
     }
-
     // Receive partial results
     unordered_map<int, unordered_map<int, int>> global_map; // hour -> signalID -> count
 
@@ -54,10 +48,7 @@ void master(const string& filename, int size, int N) {
             MPI_Recv(&signalID, 1, MPI_INT, i, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
             MPI_Recv(&count, 1, MPI_INT, i, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
             global_map[hour][signalID] += count;
-        }
-    }
-
-    // Print top N for each hour
+        }}
     for (auto& [hour, signalMap] : global_map) {
         cout << "Hour: " << hour << "\n";
         priority_queue<pair<int, int>> pq;
@@ -71,9 +62,7 @@ void master(const string& filename, int size, int N) {
             cout << "TL" << top.second << " - " << top.first << " cars\n";
         }
         cout << "------------------\n";
-    }
-}
-
+    }}
 void worker(int rank) {
     unordered_map<int, unordered_map<int, int>> hour_signal_map;
     MPI_Request recv_request;
@@ -97,7 +86,6 @@ void worker(int rank) {
 
         hour_signal_map[hour][signal] += cars;
     }
-
     // Send aggregated data
     int data_size = 0;
     for (auto& hourEntry : hour_signal_map)
@@ -110,10 +98,7 @@ void worker(int rank) {
             MPI_Send(&hour, 1, MPI_INT, 0, 0, MPI_COMM_WORLD);
             MPI_Send(&signal, 1, MPI_INT, 0, 0, MPI_COMM_WORLD);
             MPI_Send(&count, 1, MPI_INT, 0, 0, MPI_COMM_WORLD);
-        }
-    }
-}
-
+        }}}
 int main(int argc, char** argv) {
     MPI_Init(&argc, &argv);
 
@@ -127,15 +112,12 @@ int main(int argc, char** argv) {
         MPI_Finalize();
         return 1;
     }
-
     string filename = argv[1];
     int topN = stoi(argv[2]);
-
     if (rank == 0)
         master(filename, size, topN);
     else
         worker(rank);
-
     MPI_Finalize();
     return 0;
 }
